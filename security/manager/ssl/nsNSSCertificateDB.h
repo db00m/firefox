@@ -35,11 +35,20 @@ class nsNSSCertificateDB final : public nsIX509CertDB
   ~nsNSSCertificateDB() = default;
 
  private:
+  nsresult ImportUserCertificateImpl(uint8_t* data, uint32_t length,
+                                     const nsACString* aNickname,
+                                     nsIInterfaceRequestor* ctx);
+
   // Use this function to generate a default nickname for a user
   // certificate that is to be imported onto a token.
   static void get_default_nickname(CERTCertificate* cert,
                                    nsIInterfaceRequestor* ctx,
                                    nsCString& nickname);
+
+  static void get_unique_nickname_for_user_cert(CERTCertificate* cert,
+                                                const nsACString& aBaseName,
+                                                nsIInterfaceRequestor* ctx,
+                                                nsCString& nickname);
 
   static nsresult ImportCACerts(nsTArray<nsTArray<uint8_t>>& CACerts,
                                 nsIInterfaceRequestor* ctx);

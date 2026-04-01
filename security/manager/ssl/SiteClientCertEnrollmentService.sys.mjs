@@ -80,7 +80,24 @@ function base64ToBytes(value) {
   return bytes;
 }
 
-function normalizeEnrollmentJsonCertificate(payload) {
+function getEnrollmentResponseName(payload) {
+  if (!payload || typeof payload.name != "string") {
+    return null;
+  }
+
+  let name = payload.name.trim();
+  return name || null;
+}
+
+function getEnrollmentCertificateNickname(requestingURI, responseName) {
+  let host = getDisplayHost(requestingURI);
+  if (!responseName || responseName == host) {
+    return host;
+  }
+  return `${host} (${responseName})`;
+}
+
+function normalizeEnrollmentJsonResponse(payload, requestingURI) {
   if (
     !payload ||
     typeof payload != "object" ||
@@ -89,34 +106,48 @@ function normalizeEnrollmentJsonCertificate(payload) {
     throw new Error("enrollment JSON response missing certificate");
   }
 
+  let certificateBytes;
   if (payload.encoding == "pem" || payload.certificate.includes("-----BEGIN")) {
-    return stringToUtf8Bytes(payload.certificate);
-  }
-
-  if (
+    certificateBytes = stringToUtf8Bytes(payload.certificate);
+  } else if (
     !payload.encoding ||
     payload.encoding == "base64" ||
     payload.encoding == "base64-der"
   ) {
-    return base64ToBytes(payload.certificate);
+    certificateBytes = base64ToBytes(payload.certificate);
+  } else {
+    throw new Error(
+      `unsupported enrollment certificate encoding: ${payload.encoding}`
+    );
   }
 
-  throw new Error(
-    `unsupported enrollment certificate encoding: ${payload.encoding}`
-  );
+  return {
+    certificateBytes,
+    certificateNickname: getEnrollmentCertificateNickname(
+      requestingURI,
+      getEnrollmentResponseName(payload)
+    ),
+  };
 }
 
-async function readEnrollmentCertificateBytes(response) {
+async function readEnrollmentResponse(response, requestingURI) {
   let contentType = (response.headers.get("content-type") || "").toLowerCase();
   if (contentType.includes("application/json")) {
-    return normalizeEnrollmentJsonCertificate(await response.json());
+    return normalizeEnrollmentJsonResponse(
+      await response.json(),
+      requestingURI
+    );
   }
-  return new Uint8Array(await response.arrayBuffer());
+  return {
+    certificateBytes: new Uint8Array(await response.arrayBuffer()),
+    certificateNickname: getEnrollmentCertificateNickname(requestingURI, null),
+  };
 }
 
 async function promptForEnrollment(
   requestingURI,
   enrollmentURI,
+  destinationURI,
   browsingContext
 ) {
   const title = "Client certificate enrollment request";
@@ -124,6 +155,9 @@ async function promptForEnrollment(
   const text =
     `${host} requested permission to enroll a new client certificate for this browser.\n\n` +
     `Enrollment URL: ${enrollmentURI.spec}\n\n` +
+    (destinationURI
+      ? `After enrollment, Firefox will navigate this tab to: ${destinationURI.spec}\n\n`
+      : "") +
     "Allow this site to start client certificate enrollment?";
   const buttonFlags =
     Services.prompt.BUTTON_TITLE_IS_STRING * Services.prompt.BUTTON_POS_0 +
@@ -202,6 +236,64 @@ function reloadBrowsingContextForNewClientCertificate(
   }
 }
 
+function navigateBrowsingContextForNewClientCertificate(
+  requestingURI,
+  destinationURI,
+  browsingContext
+) {
+  if (!destinationURI) {
+    reloadBrowsingContextForNewClientCertificate(
+      requestingURI,
+      browsingContext
+    );
+    return;
+  }
+
+  if (!browsingContext) {
+    log("info", "skipping redirect after enrollment without browsing context", {
+      requestingURI: requestingURI.spec,
+      destinationURI: destinationURI.spec,
+    });
+    return;
+  }
+
+  let currentURI = browsingContext.currentURI;
+  if (!isSameOriginURI(requestingURI, currentURI)) {
+    log("info", "skipping redirect after enrollment on different page", {
+      requestingURI: requestingURI.spec,
+      destinationURI: destinationURI.spec,
+      currentURI: currentURI?.spec ?? null,
+      browserId: browsingContext.browserId,
+    });
+    return;
+  }
+
+  try {
+    let triggeringPrincipal =
+      browsingContext.currentWindowGlobal?.documentPrincipal ??
+      Services.scriptSecurityManager.getSystemPrincipal();
+    browsingContext.loadURI(destinationURI, { triggeringPrincipal });
+    log("info", "redirecting page after client certificate enrollment", {
+      requestingURI: requestingURI.spec,
+      destinationURI: destinationURI.spec,
+      currentURI: currentURI?.spec ?? null,
+      browserId: browsingContext.browserId,
+    });
+  } catch (error) {
+    log(
+      "error",
+      "failed to redirect page after client certificate enrollment",
+      {
+        requestingURI: requestingURI.spec,
+        destinationURI: destinationURI.spec,
+        currentURI: currentURI?.spec ?? null,
+        browserId: browsingContext.browserId,
+        error: `${error}`,
+      }
+    );
+  }
+}
+
 export function SiteClientCertEnrollmentService() {
   this._pendingRequests = new Set();
 }
@@ -216,25 +308,32 @@ SiteClientCertEnrollmentService.prototype = {
     requestingURISpec,
     enrollmentURISpec,
     enrollmentToken,
+    destinationURISpec,
     browserId
   ) {
     if (!Services.prefs.getBoolPref(ENROLLMENT_PREF, false)) {
       log("debug", "ignoring request while pref is disabled", {
         requestingURISpec,
         enrollmentURISpec,
+        destinationURISpec,
       });
       return;
     }
 
     let requestingURI;
     let enrollmentURI;
+    let destinationURI = null;
     try {
       requestingURI = Services.io.newURI(requestingURISpec);
       enrollmentURI = Services.io.newURI(enrollmentURISpec);
+      if (destinationURISpec) {
+        destinationURI = Services.io.newURI(destinationURISpec);
+      }
     } catch (error) {
       log("error", "failed to parse enrollment request URIs", {
         requestingURISpec,
         enrollmentURISpec,
+        destinationURISpec,
         error: `${error}`,
       });
       return;
@@ -242,11 +341,12 @@ SiteClientCertEnrollmentService.prototype = {
 
     const requestKey =
       `${requestingURI.prePath}|${enrollmentURI.spec}|` +
-      `${enrollmentToken}|${browserId}`;
+      `${enrollmentToken}|${destinationURI?.spec ?? ""}|${browserId}`;
     if (this._pendingRequests.has(requestKey)) {
       log("debug", "ignoring duplicate pending enrollment request", {
         requestingURI: requestingURI.spec,
         enrollmentURI: enrollmentURI.spec,
+        destinationURI: destinationURI?.spec ?? null,
         browserId,
         hasEnrollmentToken: !!enrollmentToken,
       });
@@ -257,6 +357,7 @@ SiteClientCertEnrollmentService.prototype = {
     log("info", "received enrollment request", {
       requestingURI: requestingURI.spec,
       enrollmentURI: enrollmentURI.spec,
+      destinationURI: destinationURI?.spec ?? null,
       browserId,
       hasEnrollmentToken: !!enrollmentToken,
     });
@@ -265,12 +366,14 @@ SiteClientCertEnrollmentService.prototype = {
       requestingURI,
       enrollmentURI,
       enrollmentToken,
+      destinationURI,
       browserId
     )
       .catch(error => {
         log("error", "unexpected enrollment failure", {
           requestingURI: requestingURI.spec,
           enrollmentURI: enrollmentURI.spec,
+          destinationURI: destinationURI?.spec ?? null,
           error: `${error}`,
         });
       })
@@ -283,17 +386,20 @@ SiteClientCertEnrollmentService.prototype = {
     requestingURI,
     enrollmentURI,
     enrollmentToken,
+    destinationURI,
     browserId
   ) {
     const browsingContext = getTopBrowsingContext(browserId);
     const approved = await promptForEnrollment(
       requestingURI,
       enrollmentURI,
+      destinationURI,
       browsingContext
     );
     const details = JSON.stringify({
       requestingURI: requestingURI.spec,
       enrollmentURI: enrollmentURI.spec,
+      destinationURI: destinationURI?.spec ?? null,
       browserId,
     });
 
@@ -301,6 +407,7 @@ SiteClientCertEnrollmentService.prototype = {
       log("info", "user denied enrollment request", {
         requestingURI: requestingURI.spec,
         enrollmentURI: enrollmentURI.spec,
+        destinationURI: destinationURI?.spec ?? null,
       });
       Services.obs.notifyObservers(null, DENIED_TOPIC, details);
       return;
@@ -309,12 +416,14 @@ SiteClientCertEnrollmentService.prototype = {
     log("info", "user approved enrollment request", {
       requestingURI: requestingURI.spec,
       enrollmentURI: enrollmentURI.spec,
+      destinationURI: destinationURI?.spec ?? null,
     });
     Services.obs.notifyObservers(null, APPROVED_TOPIC, details);
     await this._beginEnrollment(
       requestingURI,
       enrollmentURI,
       enrollmentToken,
+      destinationURI,
       browsingContext
     );
   },
@@ -323,6 +432,7 @@ SiteClientCertEnrollmentService.prototype = {
     requestingURI,
     enrollmentURI,
     enrollmentToken,
+    destinationURI,
     browsingContext
   ) {
     let backend = getEnrollmentBackend();
@@ -342,6 +452,7 @@ SiteClientCertEnrollmentService.prototype = {
       log("info", "submitting client certificate enrollment request", {
         requestingURI: requestingURI.spec,
         enrollmentURI: enrollmentURI.spec,
+        destinationURI: destinationURI?.spec ?? null,
         browserId: browsingContext?.browserId ?? 0,
         requestId,
         hasEnrollmentToken: !!enrollmentToken,
@@ -373,40 +484,53 @@ SiteClientCertEnrollmentService.prototype = {
       log("info", "reading enrollment response body", {
         requestingURI: requestingURI.spec,
         enrollmentURI: enrollmentURI.spec,
+        destinationURI: destinationURI?.spec ?? null,
         browserId: browsingContext?.browserId ?? 0,
         requestId,
         status: response.status,
         contentType: response.headers.get("content-type") || "",
       });
-      let certificateBytes = await readEnrollmentCertificateBytes(response);
+      let { certificateBytes, certificateNickname } =
+        await readEnrollmentResponse(response, requestingURI);
       log("info", "parsed enrollment response body", {
         requestingURI: requestingURI.spec,
         enrollmentURI: enrollmentURI.spec,
+        destinationURI: destinationURI?.spec ?? null,
         browserId: browsingContext?.browserId ?? 0,
         requestId,
         certificateBytesLength: certificateBytes.length,
+        hasCertificateName:
+          certificateNickname != getDisplayHost(requestingURI),
       });
       log("info", "calling enrollment backend completion", {
         requestingURI: requestingURI.spec,
         enrollmentURI: enrollmentURI.spec,
+        destinationURI: destinationURI?.spec ?? null,
         browserId: browsingContext?.browserId ?? 0,
         requestId,
       });
-      backend.completeEnrollment(requestId, certificateBytes);
+      backend.completeEnrollment(
+        requestId,
+        certificateBytes,
+        certificateNickname
+      );
       log("info", "enrollment backend completion returned", {
         requestingURI: requestingURI.spec,
         enrollmentURI: enrollmentURI.spec,
+        destinationURI: destinationURI?.spec ?? null,
         browserId: browsingContext?.browserId ?? 0,
         requestId,
       });
-      reloadBrowsingContextForNewClientCertificate(
+      navigateBrowsingContextForNewClientCertificate(
         requestingURI,
+        destinationURI,
         browsingContext
       );
 
       log("info", "completed client certificate enrollment", {
         requestingURI: requestingURI.spec,
         enrollmentURI: enrollmentURI.spec,
+        destinationURI: destinationURI?.spec ?? null,
         browserId: browsingContext?.browserId ?? 0,
         requestId,
       });
@@ -425,6 +549,7 @@ SiteClientCertEnrollmentService.prototype = {
       log("error", "client certificate enrollment failed", {
         requestingURI: requestingURI.spec,
         enrollmentURI: enrollmentURI.spec,
+        destinationURI: destinationURI?.spec ?? null,
         browserId: browsingContext?.browserId ?? 0,
         requestId: requestId ?? null,
         error: `${error}`,

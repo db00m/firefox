@@ -2869,35 +2869,70 @@ nsresult nsHttpChannel::ProcessClientCertEnrollmentHeader(
     return NS_OK;
   }
 
-  nsAutoString enrollmentValue16;
-  rv = GetParameterHTTP(enrollmentHeader, "", enrollmentValue16);
-  if (NS_FAILED(rv) || enrollmentValue16.IsEmpty()) {
+  nsAutoCString enrollmentValue;
+  nsAutoCString enrollmentToken;
+  nsAutoCString destinationValue;
+  nsCCharSeparatedTokenizer tokenizer(enrollmentHeader, ';');
+  if (!tokenizer.hasMoreTokens()) {
     MOZ_LOG(gSiteClientCertEnrollmentLog, LogLevel::Warning,
             ("ProcessClientCertEnrollmentHeader: malformed enrollment header "
              "value - ignoring header"));
     return NS_OK;
   }
 
-  nsAutoCString enrollmentValue;
-  CopyUTF16toUTF8(enrollmentValue16, enrollmentValue);
+  enrollmentValue = tokenizer.nextToken();
+  if (enrollmentValue.IsEmpty()) {
+    MOZ_LOG(gSiteClientCertEnrollmentLog, LogLevel::Warning,
+            ("ProcessClientCertEnrollmentHeader: malformed enrollment header "
+             "value - ignoring header"));
+    return NS_OK;
+  }
 
-  nsAutoCString enrollmentToken;
-  nsAutoString enrollmentToken16;
-  rv = GetParameterHTTP(enrollmentHeader, "token", enrollmentToken16);
-  if (rv == NS_OK) {
-    CopyUTF16toUTF8(enrollmentToken16, enrollmentToken);
-    if (enrollmentToken.IsEmpty() ||
-        !nsHttp::IsReasonableHeaderValue(enrollmentToken)) {
+  while (tokenizer.hasMoreTokens()) {
+    nsDependentCSubstring token = tokenizer.nextToken();
+    if (token.IsEmpty()) {
       MOZ_LOG(gSiteClientCertEnrollmentLog, LogLevel::Warning,
-              ("ProcessClientCertEnrollmentHeader: malformed enrollment token "
+              ("ProcessClientCertEnrollmentHeader: malformed enrollment header "
+               "value - ignoring header"));
+      return NS_OK;
+    }
+
+    if (StringBeginsWith(token, "token="_ns,
+                         nsCaseInsensitiveCStringComparator)) {
+      if (!enrollmentToken.IsEmpty()) {
+        MOZ_LOG(gSiteClientCertEnrollmentLog, LogLevel::Warning,
+                ("ProcessClientCertEnrollmentHeader: duplicate enrollment "
+                 "token - ignoring header"));
+        return NS_OK;
+      }
+
+      nsAutoString enrollmentToken16;
+      rv = GetParameterHTTP(nsCString(token), "token", enrollmentToken16);
+      if (NS_FAILED(rv)) {
+        MOZ_LOG(gSiteClientCertEnrollmentLog, LogLevel::Warning,
+                ("ProcessClientCertEnrollmentHeader: failed to parse "
+                 "enrollment token - ignoring header"));
+        return NS_OK;
+      }
+
+      CopyUTF16toUTF8(enrollmentToken16, enrollmentToken);
+      if (enrollmentToken.IsEmpty() ||
+          !nsHttp::IsReasonableHeaderValue(enrollmentToken)) {
+        MOZ_LOG(gSiteClientCertEnrollmentLog, LogLevel::Warning,
+                ("ProcessClientCertEnrollmentHeader: malformed enrollment "
+                 "token - ignoring header"));
+        return NS_OK;
+      }
+      continue;
+    }
+
+    if (!destinationValue.IsEmpty()) {
+      MOZ_LOG(gSiteClientCertEnrollmentLog, LogLevel::Warning,
+              ("ProcessClientCertEnrollmentHeader: duplicate destination URI "
                "- ignoring header"));
       return NS_OK;
     }
-  } else if (rv != NS_ERROR_INVALID_ARG) {
-    MOZ_LOG(gSiteClientCertEnrollmentLog, LogLevel::Warning,
-            ("ProcessClientCertEnrollmentHeader: failed to parse enrollment "
-             "token - ignoring header"));
-    return NS_OK;
+    destinationValue = token;
   }
 
   nsITransportSecurityInfo::OverridableErrorCategory overridableErrorCategory;
@@ -2946,6 +2981,42 @@ nsresult nsHttpChannel::ProcessClientCertEnrollmentHeader(
     return NS_OK;
   }
 
+  nsAutoCString destinationSpec;
+  if (!destinationValue.IsEmpty()) {
+    nsCOMPtr<nsIURI> destinationURI;
+    rv = NS_NewURI(getter_AddRefs(destinationURI), destinationValue, nullptr,
+                   mURI);
+    if (NS_FAILED(rv)) {
+      MOZ_LOG(gSiteClientCertEnrollmentLog, LogLevel::Warning,
+              ("ProcessClientCertEnrollmentHeader: failed to parse "
+               "destination URI '%s'",
+               destinationValue.get()));
+      return NS_OK;
+    }
+
+    if (!destinationURI->SchemeIs("https")) {
+      MOZ_LOG(gSiteClientCertEnrollmentLog, LogLevel::Warning,
+              ("ProcessClientCertEnrollmentHeader: destination URI is not "
+               "https - ignoring header"));
+      return NS_OK;
+    }
+
+    nsAutoCString destinationPrePath;
+    rv = destinationURI->GetPrePath(destinationPrePath);
+    NS_ENSURE_SUCCESS(rv, NS_OK);
+
+    if (requestPrePath != destinationPrePath) {
+      MOZ_LOG(gSiteClientCertEnrollmentLog, LogLevel::Warning,
+              ("ProcessClientCertEnrollmentHeader: destination URI '%s' is "
+               "not same-origin with request '%s' - ignoring header",
+               destinationPrePath.get(), requestPrePath.get()));
+      return NS_OK;
+    }
+
+    rv = destinationURI->GetSpec(destinationSpec);
+    NS_ENSURE_SUCCESS(rv, NS_OK);
+  }
+
   RefPtr<mozilla::dom::BrowsingContext> browsingContext;
   mLoadInfo->GetBrowsingContext(getter_AddRefs(browsingContext));
   uint64_t browserId =
@@ -2970,11 +3041,13 @@ nsresult nsHttpChannel::ProcessClientCertEnrollmentHeader(
 
   MOZ_LOG(gSiteClientCertEnrollmentLog, LogLevel::Info,
           ("ProcessClientCertEnrollmentHeader: dispatching enrollment request "
-           "for '%s' to '%s' (browserId=%" PRIu64 ", hasToken=%s)",
+           "for '%s' to '%s' (browserId=%" PRIu64 ", hasToken=%s, "
+           "hasDestination=%s)",
            requestingSpec.get(), enrollmentSpec.get(), browserId,
-           enrollmentToken.IsEmpty() ? "false" : "true"));
+           enrollmentToken.IsEmpty() ? "false" : "true",
+           destinationSpec.IsEmpty() ? "false" : "true"));
   service->RequestEnrollment(requestingSpec, enrollmentSpec, enrollmentToken,
-                             browserId);
+                             destinationSpec, browserId);
 
   return NS_OK;
 }

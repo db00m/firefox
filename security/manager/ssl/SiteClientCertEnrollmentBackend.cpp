@@ -34,8 +34,7 @@ NS_IMPL_ISUPPORTS(SiteClientCertEnrollmentBackend,
 
 namespace {
 
-constexpr auto kEnrollmentKeyNicknamePrefix =
-    "site-client-cert-enrollment:"_ns;
+constexpr auto kEnrollmentKeyNicknamePrefix = "site-client-cert-enrollment:"_ns;
 constexpr auto kCsrPemHeader = "-----BEGIN CERTIFICATE REQUEST-----\n"_ns;
 constexpr auto kCsrPemFooter = "-----END CERTIFICATE REQUEST-----\n"_ns;
 
@@ -198,7 +197,8 @@ SiteClientCertEnrollmentBackend::GetEnrollmentRequestCsr(
 
 NS_IMETHODIMP
 SiteClientCertEnrollmentBackend::CompleteEnrollment(
-    const nsACString& aRequestId, const nsTArray<uint8_t>& aCertificateBytes) {
+    const nsACString& aRequestId, const nsTArray<uint8_t>& aCertificateBytes,
+    const nsACString& aPreferredNickname) {
   MOZ_ASSERT(NS_IsMainThread());
   if (!NS_IsMainThread()) {
     return NS_ERROR_NOT_SAME_THREAD;
@@ -209,9 +209,10 @@ SiteClientCertEnrollmentBackend::CompleteEnrollment(
 
   MOZ_LOG(gPIPNSSLog, LogLevel::Debug,
           ("SiteClientCertEnrollmentBackend::CompleteEnrollment: entered "
-           "requestId='%s' certificateBytesLength=%zu",
+           "requestId='%s' certificateBytesLength=%zu hasPreferredNickname=%s",
            PromiseFlatCString(aRequestId).get(),
-           static_cast<size_t>(aCertificateBytes.Length())));
+           static_cast<size_t>(aCertificateBytes.Length()),
+           aPreferredNickname.IsEmpty() ? "false" : "true"));
 
   PendingEnrollment* pendingEnrollment = FindPendingEnrollment(aRequestId);
   if (!pendingEnrollment) {
@@ -233,22 +234,23 @@ SiteClientCertEnrollmentBackend::CompleteEnrollment(
 
   MOZ_LOG(gPIPNSSLog, LogLevel::Debug,
           ("SiteClientCertEnrollmentBackend::CompleteEnrollment: calling "
-           "ImportUserCertificate for requestId='%s'",
+           "ImportUserCertificateWithNickname for requestId='%s'",
            PromiseFlatCString(aRequestId).get()));
-  nsresult rv = certDB->ImportUserCertificate(
+  nsresult rv = certDB->ImportUserCertificateWithNickname(
       const_cast<uint8_t*>(aCertificateBytes.Elements()),
-      aCertificateBytes.Length(), nullptr);
+      aCertificateBytes.Length(), aPreferredNickname, nullptr);
   if (NS_FAILED(rv)) {
     MOZ_LOG(gPIPNSSLog, LogLevel::Debug,
             ("SiteClientCertEnrollmentBackend::CompleteEnrollment: "
-             "ImportUserCertificate failed for requestId='%s' rv=0x%08" PRIx32,
+             "ImportUserCertificateWithNickname failed for requestId='%s' "
+             "rv=0x%08" PRIx32,
              PromiseFlatCString(aRequestId).get(), static_cast<uint32_t>(rv)));
     return rv;
   }
 
   MOZ_LOG(gPIPNSSLog, LogLevel::Debug,
           ("SiteClientCertEnrollmentBackend::CompleteEnrollment: "
-           "ImportUserCertificate succeeded for requestId='%s'",
+           "ImportUserCertificateWithNickname succeeded for requestId='%s'",
            PromiseFlatCString(aRequestId).get()));
 
   for (uint32_t index = 0; index < mPendingEnrollments.Length(); index++) {

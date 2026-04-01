@@ -8,7 +8,7 @@
  * Generates and tracks pending site-driven client certificate enrollment
  * requests until the returned certificate is either imported or discarded.
  */
-[scriptable, builtinclass, uuid(66ef00ae-5e62-46ed-a449-b6d0ce9770ff)]
+[scriptable, builtinclass, uuid(45a93c16-3bb2-4f61-b187-2d9d8ea8e6d2)]
 interface nsISiteClientCertEnrollmentBackend : nsISupports
 {
   /**
@@ -37,10 +37,12 @@ interface nsISiteClientCertEnrollmentBackend : nsISupports
    * @param requestId Request id returned by createEnrollmentRequest().
    * @param certificateBytes Raw certificate package bytes accepted by
    *                         nsIX509CertDB.importUserCertificate().
+   * @param preferredNickname Preferred nickname for the imported certificate.
    */
   [must_use]
   void completeEnrollment(in AUTF8String requestId,
-                          in Array<uint8_t> certificateBytes);
+                          in Array<uint8_t> certificateBytes,
+                          in AUTF8String preferredNickname);
 
   /**
    * Deletes the generated private key for a pending enrollment request.

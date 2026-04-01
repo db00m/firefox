@@ -77,7 +77,7 @@ interface nsICertVerificationCallback : nsISupports {
  * This represents a service to access and manipulate
  * X.509 certificates stored in a database.
  */
-[scriptable, uuid(5c16cd9b-5a73-47f1-ab0f-11ede7495cce)]
+[scriptable, uuid(e392e9a9-6f25-4c69-86af-7c6404336b3f)]
 interface nsIX509CertDB : nsISupports {
 
   /**
@@ -136,6 +136,21 @@ interface nsIX509CertDB : nsISupports {
   void importUserCertificate([array, size_is(length)] in octet data,
                              in unsigned long length,
                              in nsIInterfaceRequestor ctx);
+
+  /**
+   *  Import a personal certificate into the database, assuming
+   *  the database already contains the private key for this certificate,
+   *  and prefer the given nickname for the imported certificate.
+   *
+   *  @param data The raw data to be imported
+   *  @param length The length of the data to be imported
+   *  @param nickname Preferred nickname for the imported certificate.
+   *  @param ctx A UI context.
+   */
+  void importUserCertificateWithNickname([array, size_is(length)] in octet data,
+                                         in unsigned long length,
+                                         in AUTF8String nickname,
+                                         in nsIInterfaceRequestor ctx);
 
   /**
    *  Delete a certificate stored in the database.
