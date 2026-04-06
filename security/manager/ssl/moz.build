@@ -30,6 +30,8 @@ XPIDL_SOURCES += [
     "nsIPublicKeyPinningService.idl",
     "nsISecretDecoderRing.idl",
     "nsISecurityUITelemetry.idl",
+    "nsISiteClientCertEnrollmentBackend.idl",
+    "nsISiteClientCertEnrollmentService.idl",
     "nsISiteIntegrityService.idl",
     "nsISiteSecurityService.idl",
     "nsITLSSocketControl.idl",
@@ -50,6 +52,7 @@ EXTRA_JS_MODULES.psm += [
     "DER.sys.mjs",
     "QWACs.sys.mjs",
     "RemoteSecuritySettings.sys.mjs",
+    "SiteClientCertEnrollmentService.sys.mjs",
     "X509.sys.mjs",
 ]
 
@@ -138,6 +141,7 @@ UNIFIED_SOURCES += [
     "QWACTrustDomain.cpp",
     "RootCertificateTelemetryUtils.cpp",
     "SecretDecoderRing.cpp",
+    "SiteClientCertEnrollmentBackend.cpp",
     "SiteIntegrityService.cpp",
     "SSLServerCertVerification.cpp",
     "TLSClientAuthCertSelection.cpp",

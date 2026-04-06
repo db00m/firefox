@@ -550,6 +550,19 @@ void nsNSSCertificateDB::DisplayCertificateAlert(nsIInterfaceRequestor* ctx,
 NS_IMETHODIMP
 nsNSSCertificateDB::ImportUserCertificate(uint8_t* data, uint32_t length,
                                           nsIInterfaceRequestor* ctx) {
+  return ImportUserCertificateImpl(data, length, nullptr, ctx);
+}
+
+NS_IMETHODIMP
+nsNSSCertificateDB::ImportUserCertificateWithNickname(
+    uint8_t* data, uint32_t length, const nsACString& aNickname,
+    nsIInterfaceRequestor* ctx) {
+  return ImportUserCertificateImpl(data, length, &aNickname, ctx);
+}
+
+nsresult nsNSSCertificateDB::ImportUserCertificateImpl(
+    uint8_t* data, uint32_t length, const nsACString* aNickname,
+    nsIInterfaceRequestor* ctx) {
   if (!NS_IsMainThread()) {
     NS_ERROR(
         "nsNSSCertificateDB::ImportUserCertificate called off the main thread");
@@ -588,9 +601,13 @@ nsNSSCertificateDB::ImportUserCertificate(uint8_t* data, uint32_t length,
 
   /* pick a nickname for the cert */
   nsAutoCString nickname;
-  if (cert->nickname) {
+  if (aNickname && !aNickname->IsEmpty()) {
+    get_unique_nickname_for_user_cert(cert.get(), *aNickname, ctx, nickname);
+  }
+  if (nickname.IsEmpty() && cert->nickname) {
     nickname = cert->nickname;
-  } else {
+  }
+  if (nickname.IsEmpty()) {
     get_default_nickname(cert.get(), ctx, nickname);
   }
 
@@ -907,11 +924,9 @@ nsresult nsNSSCertificateDB::ConstructX509FromSpan(
   return NS_OK;
 }
 
-void nsNSSCertificateDB::get_default_nickname(CERTCertificate* cert,
-                                              nsIInterfaceRequestor* ctx,
-                                              nsCString& nickname) {
-  nickname.Truncate();
-
+void nsNSSCertificateDB::get_unique_nickname_for_user_cert(
+    CERTCertificate* cert, const nsACString& aBaseName,
+    nsIInterfaceRequestor* ctx, nsCString& nickname) {
   CK_OBJECT_HANDLE keyHandle;
 
   if (NS_FAILED(BlockUntilLoadableCertsLoaded())) {
@@ -919,25 +934,10 @@ void nsNSSCertificateDB::get_default_nickname(CERTCertificate* cert,
   }
 
   CERTCertDBHandle* defaultcertdb = CERT_GetDefaultCertDB();
-  nsAutoCString username;
-  UniquePORTString tempCN(CERT_GetCommonName(&cert->subject));
-  if (tempCN) {
-    username = tempCN.get();
-  }
-
-  nsAutoCString caname;
-  UniquePORTString tempIssuerOrg(CERT_GetOrgName(&cert->issuer));
-  if (tempIssuerOrg) {
-    caname = tempIssuerOrg.get();
-  }
-
-  nsAutoString tmpNickFmt;
-  GetPIPNSSBundleString("nick_template", tmpNickFmt);
-  NS_ConvertUTF16toUTF8 nickFmt(tmpNickFmt);
-
-  nsAutoCString baseName;
-  baseName.AppendPrintf(nickFmt.get(), username.get(), caname.get());
+  nsAutoCString baseName(aBaseName);
+  baseName.CompressWhitespace(true, true);
   if (baseName.IsEmpty()) {
+    nickname.Truncate();
     return;
   }
 
@@ -999,6 +999,36 @@ void nsNSSCertificateDB::get_default_nickname(CERTCertificate* cert,
     }
     count++;
   }
+}
+
+void nsNSSCertificateDB::get_default_nickname(CERTCertificate* cert,
+                                              nsIInterfaceRequestor* ctx,
+                                              nsCString& nickname) {
+  nickname.Truncate();
+
+  nsAutoCString username;
+  UniquePORTString tempCN(CERT_GetCommonName(&cert->subject));
+  if (tempCN) {
+    username = tempCN.get();
+  }
+
+  nsAutoCString caname;
+  UniquePORTString tempIssuerOrg(CERT_GetOrgName(&cert->issuer));
+  if (tempIssuerOrg) {
+    caname = tempIssuerOrg.get();
+  }
+
+  nsAutoString tmpNickFmt;
+  GetPIPNSSBundleString("nick_template", tmpNickFmt);
+  NS_ConvertUTF16toUTF8 nickFmt(tmpNickFmt);
+
+  nsAutoCString baseName;
+  baseName.AppendPrintf(nickFmt.get(), username.get(), caname.get());
+  if (baseName.IsEmpty()) {
+    return;
+  }
+
+  get_unique_nickname_for_user_cert(cert, baseName, ctx, nickname);
 }
 
 NS_IMETHODIMP

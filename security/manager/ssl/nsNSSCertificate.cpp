@@ -202,6 +202,13 @@ nsNSSCertificate::GetDisplayName(nsAString& aDisplayName) {
   // (the subject really shouldn't be empty), an empty string is returned.
   nsAutoCString builtInRootNickname;
   nsAutoCString fullNickname(cert->nickname);
+  CERTCertTrust certTrust{0, 0, 0};
+  (void)CERT_GetCertTrust(cert.get(), &certTrust);
+  nsNSSCertTrust trust(&certTrust);
+  nsAutoCString userNickname;
+  if (cert->nickname && trust.HasAnyUser()) {
+    userNickname = cert->nickname;
+  }
   static const nsLiteralCString kBuiltinObjectTokenPrefix =
       "Builtin Object Token:"_ns;
   if (StringBeginsWith(fullNickname, kBuiltinObjectTokenPrefix)) {
@@ -212,6 +219,7 @@ nsNSSCertificate::GetDisplayName(nsAString& aDisplayName) {
         Substring(fullNickname, kBuiltinObjectTokenPrefix.Length());
   }
   const char* nameOptions[] = {builtInRootNickname.get(),
+                               userNickname.get(),
                                commonName.get(),
                                organizationalUnitName.get(),
                                organizationName.get(),
