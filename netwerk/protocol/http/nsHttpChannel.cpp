@@ -3001,18 +3001,6 @@ nsresult nsHttpChannel::ProcessClientCertEnrollmentHeader(
       return NS_OK;
     }
 
-    nsAutoCString destinationPrePath;
-    rv = destinationURI->GetPrePath(destinationPrePath);
-    NS_ENSURE_SUCCESS(rv, NS_OK);
-
-    if (requestPrePath != destinationPrePath) {
-      MOZ_LOG(gSiteClientCertEnrollmentLog, LogLevel::Warning,
-              ("ProcessClientCertEnrollmentHeader: destination URI '%s' is "
-               "not same-origin with request '%s' - ignoring header",
-               destinationPrePath.get(), requestPrePath.get()));
-      return NS_OK;
-    }
-
     rv = destinationURI->GetSpec(destinationSpec);
     NS_ENSURE_SUCCESS(rv, NS_OK);
   }
